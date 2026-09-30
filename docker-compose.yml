@@ -1,170 +1,219 @@
 # ════════════════════════════════════════════════════════════════════════════════
-# NodeRED + N8N (SQLite) + Home Assistant + InfluxDB + Grafana
-# + Nginx Proxy Manager + Cloudflare Tunnel + MQTT
+# Mosquitto + InfluxDB + Node-RED + n8n (Postgres) + FastAPI + Grafana
+# profile "extra": Home Assistant, Nginx Proxy Manager, Cloudflare Tunnel
 #
-# ตัวแปรที่ต้องใน .env file:
-#   TZ                      — Timezone เช่น Asia/Bangkok
-#   NODERED_USERNAME        — Node-RED username
-#   NODERED_PASSWORD_HASH   — Node-RED password hash
-#   INFLUXDB_USERNAME       — InfluxDB admin username
-#   INFLUXDB_PASSWORD       — InfluxDB admin password
-#   INFLUXDB_ORG            — InfluxDB organization
-#   INFLUXDB_BUCKET         — InfluxDB default bucket
-#   INFLUXDB_ADMIN_TOKEN    — InfluxDB admin token
-#   GRAFANA_ADMIN_USER      — Grafana admin username
-#   GRAFANA_ADMIN_PASSWORD  — Grafana admin password
-#   N8N_DOMAIN              — N8N domain (e.g., n8n.yourdomain.com)
-#   N8N_ENCRYPTION_KEY      — N8N encryption key (32-char hex)
-#   CLOUDFLARE_TUNNEL_TOKEN — Cloudflare Tunnel token (optional)
+# ใช้ไฟล์เดียวทั้ง Mac และ VPS — ทุก port bind 127.0.0.1 เท่านั้น
+# (Docker ข้าม ufw → ห้ามใช้ "PORT:PORT" เฉย ๆ) เข้าถึงจากภายนอกผ่าน SSH tunnel
 #
-# Cloudflare Tunnel Setup:
-#   1. เข้า https://one.dash.cloudflare.com → Networks → Tunnels
-#   2. สร้าง Tunnel → Copy token ใส่ .env
-#   3. เพิ่ม Public Hostname: n8n.yourdomain.com → http://nginx-proxy-manager:80
-#   4. Nginx Proxy Manager เพิ่ม Proxy Host: n8n.yourdomain.com → http://n8n:5678
+# ตัวแปรใน .env (ดู .env.example):
+#   TZ, NODERED_USERNAME, NODERED_PASSWORD_HASH,
+#   INFLUXDB_USERNAME/PASSWORD/ORG/BUCKET/ADMIN_TOKEN,
+#   GRAFANA_ADMIN_USER/PASSWORD,
+#   POSTGRES_USER/PASSWORD/DB, N8N_ENCRYPTION_KEY, N8N_PUBLIC_URL,
+#   CLOUDFLARE_TUNNEL_TOKEN (เฉพาะ profile extra)
+#
+# รัน extras:  docker compose --profile extra up -d
 # ════════════════════════════════════════════════════════════════════════════════
+
+x-common: &common
+  restart: unless-stopped
+  networks:
+    - iot_network
 
 services:
 
-  # ════════════════════════════════════════════════════════
-  #  Mosquitto — Local MQTT Broker
-  #  MQTT : localhost:1883
-  #  WS   : localhost:9001
-  # ════════════════════════════════════════════════════════
+  # ── Mosquitto — MQTT (localhost เท่านั้น) ────────────────
+  # TODO: ก่อนเปิดให้ ESP32 ต่อจากภายนอก ต้องตั้ง password + ACL (ปิด allow_anonymous)
   mosquitto:
-    image: eclipse-mosquitto:2
+    <<: *common
+    image: eclipse-mosquitto:2.0.22
     container_name: mosquitto
     ports:
-      - "1883:1883"
-      - "9001:9001"
+      - "127.0.0.1:1883:1883"
+      - "127.0.0.1:9001:9001"
     volumes:
       - ./mosquitto/config/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
       - mosquitto_data:/mosquitto/data
       - mosquitto_log:/mosquitto/log
-    restart: unless-stopped
-    networks:
-      - iot_network
+    environment:
+      - TZ=${TZ:-Asia/Bangkok}
     healthcheck:
       test: ["CMD", "mosquitto_sub", "-t", "$$SYS/#", "-C", "1", "-i", "healthcheck", "-W", "3"]
       interval: 30s
       timeout: 10s
       retries: 3
 
-  # ════════════════════════════════════════════════════════
-  #  InfluxDB — Time-Series Database
-  #  UI  : http://localhost:8086
-  #  เชื่อมจาก container: http://influxdb:8086
-  #
-  #  ORG / BUCKET / TOKEN: init อัตโนมัติจาก .env (ไม่ต้องตั้งใน UI)
-  #  ⚠️ ค่าเหล่านี้ init เฉพาะตอน volume ว่าง (ครั้งแรก) เท่านั้น
-  #     ถ้าเคยรันแล้วต้องแก้ ให้ล้าง volume: docker compose down -v
-  #  ดู: README.md (Step 5)
-  # ════════════════════════════════════════════════════════
+  # ── InfluxDB — Time-series (UI :8086) ───────────────────
+  # ⚠️ INIT_* ทำงานเฉพาะตอน volume ว่าง (ครั้งแรก)
   influxdb:
-    image: influxdb:2.7
+    <<: *common
+    image: influxdb:2.7.12
     container_name: influxdb
     ports:
-      - "8086:8086"
+      - "127.0.0.1:8086:8086"
     volumes:
       - influxdb_data:/var/lib/influxdb2
       - influxdb_config:/etc/influxdb2
     environment:
-      - TZ=${TZ}
+      - TZ=${TZ:-Asia/Bangkok}
       - DOCKER_INFLUXDB_INIT_MODE=setup
-      - DOCKER_INFLUXDB_INIT_USERNAME=${INFLUXDB_USERNAME}
-      - DOCKER_INFLUXDB_INIT_PASSWORD=${INFLUXDB_PASSWORD}
-      - DOCKER_INFLUXDB_INIT_ORG=${INFLUXDB_ORG}
-      - DOCKER_INFLUXDB_INIT_BUCKET=${INFLUXDB_BUCKET}
-      - DOCKER_INFLUXDB_INIT_ADMIN_TOKEN=${INFLUXDB_ADMIN_TOKEN}
-    restart: unless-stopped
-    networks:
-      - iot_network
+      - DOCKER_INFLUXDB_INIT_USERNAME=${INFLUXDB_USERNAME:?set in .env}
+      - DOCKER_INFLUXDB_INIT_PASSWORD=${INFLUXDB_PASSWORD:?set in .env}
+      - DOCKER_INFLUXDB_INIT_ORG=${INFLUXDB_ORG:?set in .env}
+      - DOCKER_INFLUXDB_INIT_BUCKET=${INFLUXDB_BUCKET:?set in .env}
+      - DOCKER_INFLUXDB_INIT_ADMIN_TOKEN=${INFLUXDB_ADMIN_TOKEN:?set in .env}
     healthcheck:
       test: ["CMD", "influx", "ping"]
       interval: 30s
       timeout: 10s
       retries: 5
 
-  # ════════════════════════════════════════════════════════
-  #  Node-RED — Flow-based IoT Automation
-  #  UI : http://localhost:1880
-  #  Login: ${NODERED_USERNAME}
-  # ════════════════════════════════════════════════════════
+  # ── Node-RED (UI :1880, adminAuth เปิดใน settings.js) ────
   nodered:
-    image: nodered/node-red:latest
+    <<: *common
+    image: nodered/node-red:5.0.7
     container_name: nodered
     ports:
-      - "1880:1880"
+      - "127.0.0.1:1880:1880"
     volumes:
       - nodered_data:/data
       - ./nodered/settings.js:/data/settings.js
       - ./nodered/package.json:/data/package.json
     environment:
-      - TZ=${TZ}
-      - NODERED_USERNAME=${NODERED_USERNAME}
-      - NODERED_PASSWORD_HASH=${NODERED_PASSWORD_HASH}
+      - TZ=${TZ:-Asia/Bangkok}
+      - NODERED_USERNAME=${NODERED_USERNAME:?set in .env}
+      - NODERED_PASSWORD_HASH=${NODERED_PASSWORD_HASH:?set in .env}
       - INFLUXDB_URL=http://influxdb:8086
       - INFLUXDB_TOKEN=${INFLUXDB_ADMIN_TOKEN}
       - INFLUXDB_ORG=${INFLUXDB_ORG}
       - INFLUXDB_BUCKET=${INFLUXDB_BUCKET}
-    restart: unless-stopped
     depends_on:
       mosquitto:
         condition: service_healthy
       influxdb:
         condition: service_healthy
-    networks:
-      - iot_network
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:1880/',r=>process.exit(r.statusCode<500?0:1)).on('error',()=>process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
 
-  # ════════════════════════════════════════════════════════
-  #  N8N — Workflow Automation (SQLite)
-  #  UI      : http://localhost:5678
-  #  Public  : https://${N8N_DOMAIN}  (ผ่าน Cloudflare Tunnel)
-  # ════════════════════════════════════════════════════════
+  # ── Postgres — DB ของ n8n (ไม่ publish port) ─────────────
+  postgres:
+    <<: *common
+    image: postgres:16.15-alpine
+    container_name: postgres
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    environment:
+      - TZ=${TZ:-Asia/Bangkok}
+      - POSTGRES_USER=${POSTGRES_USER:?set in .env}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?set in .env}
+      - POSTGRES_DB=${POSTGRES_DB:?set in .env}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ── n8n (UI :5678) ──────────────────────────────────────
+  # N8N_SECURE_COOKIE=false: เข้าได้เฉพาะผ่าน SSH tunnel (http://localhost) ซึ่งไม่มี HTTPS
+  # ถ้าเปิดออก internet ผ่าน reverse proxy + HTTPS ให้ลบบรรทัดนี้ และตั้ง N8N_PROTOCOL=https
   n8n:
-    image: n8nio/n8n:latest
+    <<: *common
+    image: n8nio/n8n:2.42.1
     container_name: n8n
     ports:
-      - "5678:5678"
+      - "127.0.0.1:5678:5678"
     volumes:
       - n8n_data:/home/node/.n8n
     environment:
-      - TZ=${TZ}
-      - GENERIC_TIMEZONE=${TZ}
-      - N8N_HOST=0.0.0.0
+      - TZ=${TZ:-Asia/Bangkok}
+      - GENERIC_TIMEZONE=${TZ:-Asia/Bangkok}
       - N8N_PORT=5678
-      - N8N_PROTOCOL=https
-      - WEBHOOK_URL=https://${N8N_DOMAIN}/
-      - N8N_EDITOR_BASE_URL=https://${N8N_DOMAIN}/
-      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY}
+      - N8N_PROTOCOL=http
+      - N8N_SECURE_COOKIE=false
+      - WEBHOOK_URL=${N8N_PUBLIC_URL:-http://localhost:5678/}
+      - N8N_EDITOR_BASE_URL=${N8N_PUBLIC_URL:-http://localhost:5678/}
+      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY:?set in .env}
       - N8N_METRICS=false
       - EXECUTIONS_DATA_PRUNE=true
       - EXECUTIONS_DATA_MAX_AGE=168
-      - DB_TYPE=sqlite
-    restart: unless-stopped
+      - DB_TYPE=postgresdb
+      - DB_POSTGRESDB_HOST=postgres
+      - DB_POSTGRESDB_PORT=5432
+      - DB_POSTGRESDB_DATABASE=${POSTGRES_DB}
+      - DB_POSTGRESDB_USER=${POSTGRES_USER}
+      - DB_POSTGRESDB_PASSWORD=${POSTGRES_PASSWORD}
     depends_on:
+      postgres:
+        condition: service_healthy
       mosquitto:
         condition: service_healthy
-    networks:
-      - iot_network
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:5678/healthz >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
 
-  # ════════════════════════════════════════════════════════
-  #  Home Assistant — Home Automation
-  #  UI : http://localhost:8123
-  # ════════════════════════════════════════════════════════
+  # ── FastAPI starter (build จาก ./fastapi — build บน VPS เพราะ arch ต่างกัน) ──
+  fastapi:
+    <<: *common
+    build: ./fastapi
+    image: aiots-fastapi:0.1.0
+    container_name: fastapi
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      - TZ=${TZ:-Asia/Bangkok}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health',timeout=3).status==200 else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # ── Grafana (UI :3000) ──────────────────────────────────
+  grafana:
+    <<: *common
+    image: grafana/grafana:13.2.3
+    container_name: grafana
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+    environment:
+      - TZ=${TZ:-Asia/Bangkok}
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:?set in .env}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:?set in .env}
+      - GF_INSTALL_PLUGINS=grafana-clock-panel,grafana-simple-json-datasource
+      - GF_SERVER_ROOT_URL=http://localhost:3000
+    depends_on:
+      influxdb:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/api/health >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # ════════════ profile "extra" — ไม่รันโดย default ════════════
+
   homeassistant:
-    image: homeassistant/home-assistant:stable
+    <<: *common
+    profiles: [extra]
+    image: homeassistant/home-assistant:2026.9.4
     container_name: homeassistant
     ports:
-      - "8123:8123"
+      - "127.0.0.1:8123:8123"
     volumes:
       - homeassistant_config:/config
     environment:
-      - TZ=${TZ}
+      - TZ=${TZ:-Asia/Bangkok}
     privileged: true
-    restart: unless-stopped
-    networks:
-      - iot_network
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8123 || exit 1"]
       interval: 30s
@@ -172,54 +221,20 @@ services:
       retries: 5
       start_period: 60s
 
-  # ════════════════════════════════════════════════════════
-  #  Grafana — Data Visualization Dashboard
-  #  UI : http://localhost:3000
-  #  Default login: admin / (GRAFANA_ADMIN_PASSWORD)
-  #
-  #  InfluxDB DataSource: ตั้งเอง ผ่าน Grafana UI
-  #  ดู: README.md (Step 5)
-  # ════════════════════════════════════════════════════════
-  grafana:
-    image: grafana/grafana:latest
-    container_name: grafana
-    ports:
-      - "3000:3000"
-    volumes:
-      - grafana_data:/var/lib/grafana
-    environment:
-      - TZ=${TZ}
-      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER}
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
-      - GF_INSTALL_PLUGINS=grafana-clock-panel,grafana-simple-json-datasource
-      - GF_SERVER_ROOT_URL=http://localhost:3000
-    restart: unless-stopped
-    depends_on:
-      influxdb:
-        condition: service_healthy
-    networks:
-      - iot_network
-
-  # ════════════════════════════════════════════════════════
-  #  Nginx Proxy Manager — Reverse Proxy + SSL
-  #  Admin UI : http://localhost:81
-  #  HTTP     : port 80
-  #  HTTPS    : port 443
-  #  Default login: admin@example.com / changeme
-  # ════════════════════════════════════════════════════════
   nginx-proxy-manager:
-    image: jc21/nginx-proxy-manager:latest
+    <<: *common
+    profiles: [extra]
+    image: jc21/nginx-proxy-manager:2.16.0
     container_name: nginx-proxy-manager
     ports:
-      - "80:80"
-      - "443:443"
-      - "81:81"
+      - "127.0.0.1:80:80"
+      - "127.0.0.1:443:443"
+      - "127.0.0.1:81:81"
     volumes:
       - npm_data:/data
       - npm_letsencrypt:/etc/letsencrypt
-    restart: unless-stopped
-    networks:
-      - iot_network
+    environment:
+      - TZ=${TZ:-Asia/Bangkok}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:81"]
       interval: 30s
@@ -227,31 +242,17 @@ services:
       retries: 5
       start_period: 30s
 
-  # ════════════════════════════════════════════════════════
-  #  Cloudflare Tunnel — เชื่อม N8N ออก Internet
-  #
-  #  Setup:
-  #  1. https://one.dash.cloudflare.com → Networks → Tunnels
-  #  2. สร้าง Tunnel → copy token → ใส่ใน .env
-  #  3. เพิ่ม Public Hostname:
-  #     n8n.yourdomain.com → http://nginx-proxy-manager:80
-  #  4. ใน Nginx Proxy Manager เพิ่ม Proxy Host:
-  #     n8n.yourdomain.com → http://n8n:5678
-  # ════════════════════════════════════════════════════════
+  # ห้ามใช้ token เดียวกับเครื่อง Mac — สร้าง tunnel ใหม่สำหรับ VPS
   cloudflared:
-    image: cloudflare/cloudflared:latest
+    <<: *common
+    profiles: [extra]
+    image: cloudflare/cloudflared:2026.9.3
     container_name: cloudflared
-    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
-    restart: unless-stopped
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN:-}
     depends_on:
       nginx-proxy-manager:
         condition: service_healthy
-    networks:
-      - iot_network
 
-# ════════════════════════════════════════════════════════
-#  Networks & Volumes
-# ════════════════════════════════════════════════════════
 networks:
   iot_network:
     driver: bridge
@@ -262,6 +263,7 @@ volumes:
   influxdb_data:
   influxdb_config:
   nodered_data:
+  postgres_data:
   n8n_data:
   homeassistant_config:
   grafana_data:

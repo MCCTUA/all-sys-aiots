@@ -1,0 +1,8 @@
+{
+  "name": "node-red-project",
+  "description": "Node-RED custom nodes",
+  "version": "1.0.0",
+  "dependencies": {
+    "node-red-contrib-influxdb": "*"
+  }
+}

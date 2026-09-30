@@ -88,7 +88,7 @@ npx bcryptjs "รหัสผ่านที่ต้องการ" 8
 
 จะได้ผลลัพธ์ เช่น:
 ```
-$2b$08$e9VVIc9vJpnsw9LotxfoeOB.EfPAxbZ39HDts2DEbY38Gm5M2r7X2
+<BCRYPT_HASH>
 ```
 
 > ### ⚠️⚠️ สำคัญมาก: ต้อง escape `$` เป็น `$$` ก่อนวางลง `.env`
@@ -104,7 +104,7 @@ $2b$08$e9VVIc9vJpnsw9LotxfoeOB.EfPAxbZ39HDts2DEbY38Gm5M2r7X2
 
 ```env
 NODERED_USERNAME=admin
-NODERED_PASSWORD_HASH=$$2b$$08$$e9VVIc9vJpnsw9LotxfoeOB.EfPAxbZ39HDts2DEbY38Gm5M2r7X2
+NODERED_PASSWORD_HASH=<BCRYPT_HASH>
 ```
 
 #### 3.2 N8N Encryption Key (hex 32 ตัว)

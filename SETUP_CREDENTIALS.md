@@ -36,7 +36,7 @@ npx bcryptjs "รหัสผ่านที่ต้องการ" 8
 
 **Output ตัวอย่าง:**
 ```
-$2b$08$e9VVIc9vJpnsw9LotxfoeOB.EfPAxbZ39HDts2DEbY38Gm5M2r7X2
+<BCRYPT_HASH>
 ```
 
 ### Step 3: 🔴 escape `$` เป็น `$$` แล้วใส่ลง .env
@@ -53,7 +53,7 @@ $2b$08$e9VVIc9vJpnsw9LotxfoeOB.EfPAxbZ39HDts2DEbY38Gm5M2r7X2
 
 **ใส่ลงใน .env:**
 ```env
-NODERED_PASSWORD_HASH=$$2b$$08$$e9VVIc9vJpnsw9LotxfoeOB.EfPAxbZ39HDts2DEbY38Gm5M2r7X2
+NODERED_PASSWORD_HASH=<BCRYPT_HASH>
 ```
 
 ### ⚠️ ตรวจสอบ Hash
@@ -247,7 +247,7 @@ INFLUXDB_ADMIN_TOKEN=8f3a2b1c9d7e5f4a6b2c1d9e8f7a3b2c8f3a2b1c9d7e5f4a6b2c1d9e8f7
 # ── Node-RED Login ────────────────────────────────────────
 # ⚠️ hash ต้อง escape $ เป็น $$ (ดู Step 3 ด้านบน)
 NODERED_USERNAME=admin
-NODERED_PASSWORD_HASH=$$2b$$08$$e9VVIc9vJpnsw9LotxfoeOB.EfPAxbZ39HDts2DEbY38Gm5M2r7X2
+NODERED_PASSWORD_HASH=<BCRYPT_HASH>
 
 # ── Cloudflare Tunnel (Optional) ──────────────────────────
 CLOUDFLARE_TUNNEL_TOKEN=your-cloudflare-tunnel-token-here
