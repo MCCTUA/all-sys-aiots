@@ -11,7 +11,35 @@ scripts/deploy.sh             # rsync -> /opt/learn แล้ว docker compose 
 
 ## .env บน VPS
 - `/opt/learn/.env` (chmod 600) สร้างจาก `.env.example` + `openssl rand` — ห้าม cat/commit
-- รหัสผ่าน Node-RED (plaintext) อยู่ที่ `/home/tua/nodered-admin-login.txt` (600)
+- รหัสผ่าน Node-RED (plaintext) อยู่ที่ `/home/tua/.learn-credentials` (600) บรรทัด `NODERED_PASSWORD=...`
+  - `.env` เก็บแค่ bcrypt hash (`NODERED_PASSWORD_HASH`) — `$` ใน hash ต้องเขียนเป็น `$$` ไม่งั้น compose จะ interpolate แล้ว hash ถูกตัด
+
+### Reset รหัสผ่าน Node-RED
+รันบน VPS (ไม่ print ความลับ):
+```
+cd /opt/learn
+PW=$(openssl rand -base64 24 | tr -d '/+=\n' | cut -c1-24)
+# เก็บ plaintext (แทนบรรทัดเดิม)
+sed -i '/^NODERED_PASSWORD=/d' /home/tua/.learn-credentials
+printf 'NODERED_PASSWORD=%s\n' "$PW" >> /home/tua/.learn-credentials; chmod 600 /home/tua/.learn-credentials
+# bcrypt ด้วย bcryptjs ที่มากับ node-red (ส่งรหัสผ่านทาง stdin ไม่ใช้ argv)
+HASH=$(printf '%s' "$PW" | docker exec -i nodered node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(require("bcryptjs").hashSync(s,8)))')
+cp .env .env.bak.$(date +%s)
+grep -v '^NODERED_PASSWORD_HASH=' .env > .env.tmp
+printf 'NODERED_PASSWORD_HASH=%s\n' "${HASH//\$/\$\$}" >> .env.tmp   # escape $ -> $$
+chmod 600 .env.tmp && mv .env.tmp .env
+docker compose up -d nodered
+```
+ตรวจ (ไม่ print ค่า): `docker compose config | grep NODERED_PASSWORD_HASH | sed -E 's/.*: *//' | tr -d '\n' | wc -c` ต้องได้ 63 (hash 60 + `$` ที่ compose escape แสดงผลอีก 3)
+
+ทดสอบ login (ควรได้ 200; รหัสผิด 403):
+```
+curl -s -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:1880/auth/token \
+  -d client_id=node-red-admin -d grant_type=password -d scope='*' \
+  --data-urlencode "username=$(grep ^NODERED_USERNAME= .env | cut -d= -f2-)" \
+  --data-urlencode "password=$PW"
+```
+ลบไฟล์ `.env.bak.*` เมื่อยืนยันแล้วว่า login ได้
 - Grafana/InfluxDB/Postgres password อยู่ใน `.env` — อ่านเฉพาะค่าที่ต้องใช้ เช่น `grep ^GRAFANA_ADMIN_PASSWORD /opt/learn/.env`
 - InfluxDB init เฉพาะ volume ว่าง: แก้ค่าใน .env ภายหลังไม่มีผล
 
